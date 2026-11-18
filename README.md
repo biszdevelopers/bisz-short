@@ -7,8 +7,9 @@ Standalone short-link backend. The public listener on **6767** serves `GET /:cod
 Requires Node.js 24 or later.
 
 1. Run `npm ci`.
-2. Copy `.env.example` to `.env` and set `INTERNAL_API_TOKEN` to a secret. Generate one with the command in the example file.
-3. Run `npm start`. SQLite creates the database and tables on first start.
+2. Create a PostgreSQL database and set its connection string as `DATABASE_URL` in `.env`. Copy `.env.example` as a starting point and set `INTERNAL_API_TOKEN` to a secret.
+3. Run `npm run db:migrate` to apply the Drizzle migrations.
+4. Run `npm start`.
 
 The public listener binds to all interfaces by default. Set `PUBLIC_HOST` to change that. If you run behind a trusted reverse proxy that overwrites the forwarding headers and controls access to the origin, set `TRUST_PROXY=true` to use the forwarded visitor IP and scheme in visit records.
 
@@ -35,6 +36,6 @@ Codes are case insensitive and stay fixed after creation. URLs must use HTTP or 
 
 ## Database
 
-[`src/schema.sql`](src/schema.sql) preserves the Basis Sites `short_links` table, its case insensitive unique index, and `short_visits` for click history. `owner_user_id` remains a nullable reference value; the service does not need the Basis Sites user database. Visit records older than `SHORT_VISIT_RETENTION_DAYS` (default 90) are pruned on redirects; lifetime counts are retained. Set `DB_PATH` to choose the database file. The default is a new database at `./data/short-links.sqlite`; this does not copy any existing records.
+The [Drizzle schema](src/schema.js) preserves the Basis Sites `short_links` columns, case-insensitive code uniqueness, and `short_visits` for click history. The API returns timestamps as UTC ISO 8601 strings. `owner_user_id` remains a nullable reference value; the service does not need the Basis Sites user database. Visit records older than `SHORT_VISIT_RETENTION_DAYS` (default 90) are pruned on redirects; lifetime counts are retained. Migrations create the tables in the configured PostgreSQL database. Existing records can be imported separately.
 
-Run `npm test` to verify the public and internal listeners together.
+Run `npm test` to apply the migrations to an in-memory PostgreSQL instance (PGlite) and verify both listeners. After editing the Drizzle schema, run `npm run db:generate` to generate a migration.

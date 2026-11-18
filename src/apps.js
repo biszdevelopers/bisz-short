@@ -25,7 +25,7 @@ const fields = z.strictObject({
     }, "Destination must be an absolute HTTP or HTTPS URL without unescaped spaces or control characters"),
     owner_user_id: z.int().positive().nullable().optional(),
     enabled: z.boolean().optional(),
-    expires_at: z.iso.datetime({ offset: true }).transform((value) => new Date(value).toISOString())
+    expires_at: z.iso.datetime({ offset: true }).transform((value) => new Date(value))
         .nullable().optional(),
 });
 const createSchema = fields.extend({ code: codeSchema.optional() });
@@ -79,11 +79,11 @@ export function createApps(store, { token, trustProxy = false }) {
         });
     }
 
-    publicApp.get("/:code", (c) => {
+    publicApp.get("/:code", async (c) => {
         const code = codeSchema.safeParse(c.req.param("code"));
-        const link = code.success ? store.find(code.data) : undefined;
+        const link = code.success ? await store.find(code.data) : undefined;
         if (!link?.enabled) return error(c, 404, "Short link not found");
-        if (link.expires_at && Date.parse(link.expires_at) <= Date.now()) {
+        if (link.expires_at && link.expires_at.getTime() <= Date.now()) {
             return error(c, 410, "Short link expired");
         }
         const requestUrl = new URL(c.req.url);
@@ -101,7 +101,7 @@ export function createApps(store, { token, trustProxy = false }) {
             const ip = clientIp || (c.env?.incoming ? getConnInfo(c).remote.address : null) || null;
             const proto = trustProxy ? forwarded("x-forwarded-proto") : undefined;
             if (proto === "https" || proto === "http") requestUrl.protocol = proto + ":";
-            store.recordClick(link, ip, requestUrl.href);
+            await store.recordClick(link, ip, requestUrl.href);
         } catch (err) {
             console.error("Short-link visit logging failed", err);
         }
@@ -122,11 +122,11 @@ export function createApps(store, { token, trustProxy = false }) {
     }));
 
     const links = "/api/links";
-    internalApp.get(links, (c) => {
+    internalApp.get(links, async (c) => {
         const page = paging.safeParse(c.req.query());
         if (!page.success) return error(c, 400, "Invalid limit, offset or owner_user_id");
         const { limit, offset, owner_user_id } = page.data;
-        return c.json(store.list(limit, offset, owner_user_id));
+        return c.json(await store.list(limit, offset, owner_user_id));
     });
 
     internalApp.post(links, async (c) => {
@@ -139,40 +139,38 @@ export function createApps(store, { token, trustProxy = false }) {
         for (let attempt = 0; attempt < (requested ? 1 : 10); attempt++) {
             const code = requested ?? Array.from({ length: 7 }, () => alphabet[randomInt(alphabet.length)]).join("");
             if (reserved.has(code.toLowerCase())) continue;
-            try {
-                const link = store.insert({ owner_user_id: null, enabled: 1, expires_at: null, ...data, code });
+            const link = await store.insert({ owner_user_id: null, enabled: 1, expires_at: null, ...data, code });
+            if (link) {
                 c.header("Location", `${links}/${link.code}`);
                 return c.json(link, 201);
-            } catch (err) {
-                if (err.code !== "SQLITE_CONSTRAINT_UNIQUE") throw err;
-                if (requested) return error(c, 409, "Short code already taken");
             }
+            if (requested) return error(c, 409, "Short code already taken");
         }
         return error(c, 503, "Could not allocate a short code, try again");
     });
 
-    internalApp.get(`${links}/:code`, (c) => {
-        const link = store.find(c.req.param("code"));
+    internalApp.get(`${links}/:code`, async (c) => {
+        const link = await store.find(c.req.param("code"));
         return link ? c.json(link) : error(c, 404, "Short link not found");
     });
 
-    internalApp.get(`${links}/:code/visits`, (c) => {
-        const link = store.find(c.req.param("code"));
+    internalApp.get(`${links}/:code/visits`, async (c) => {
+        const link = await store.find(c.req.param("code"));
         if (!link) return error(c, 404, "Short link not found");
         const page = paging.pick({ limit: true, offset: true }).safeParse(c.req.query());
         if (!page.success) return error(c, 400, "Invalid limit or offset");
-        return c.json(store.visits(link.code, page.data.limit, page.data.offset));
+        return c.json(await store.visits(link.code, page.data.limit, page.data.offset));
     });
 
     internalApp.patch(`${links}/:code`, async (c) => {
         const { data, response } = await readBody(c, patchSchema);
         if (response) return response;
-        const link = store.update(c.req.param("code"), data);
+        const link = await store.update(c.req.param("code"), data);
         return link ? c.json(link) : error(c, 404, "Short link not found");
     });
 
-    internalApp.delete(`${links}/:code`, (c) => {
-        return store.remove(c.req.param("code"))
+    internalApp.delete(`${links}/:code`, async (c) => {
+        return await store.remove(c.req.param("code"))
             ? c.json({ ok: true })
             : error(c, 404, "Short link not found");
     });

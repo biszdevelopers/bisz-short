@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { openDatabase, createStore } from "./database.js";
 import { createApps } from "./apps.js";
+import { shortLinks, shortVisits } from "./schema.js";
 
 const token = process.env.INTERNAL_API_TOKEN?.trim();
 if (!token) throw new Error("Set INTERNAL_API_TOKEN in the environment or .env");
@@ -13,7 +14,14 @@ const trustProxy = process.env.TRUST_PROXY ?? "false";
 if (trustProxy !== "true" && trustProxy !== "false") {
     throw new Error("TRUST_PROXY must be true or false");
 }
-const db = openDatabase(process.env.DB_PATH || "./data/short-links.sqlite");
+const { db, close } = openDatabase(process.env.DATABASE_URL);
+try {
+    await db.select().from(shortLinks).limit(0);
+    await db.select().from(shortVisits).limit(0);
+} catch (error) {
+    await close();
+    throw error;
+}
 const store = createStore(db, retentionDays);
 const { publicApp, internalApp } = createApps(store, { token, trustProxy: trustProxy === "true" });
 const servers = [];
@@ -24,7 +32,11 @@ function stop(exitCode = 0) {
     shuttingDown = true;
     process.exitCode = exitCode;
     Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))))
-        .then(() => db.close());
+        .then(close)
+        .catch((error) => {
+            console.error("Could not close PostgreSQL pool", error);
+            process.exitCode = 1;
+        });
 }
 
 for (const [name, app, hostname, port] of [

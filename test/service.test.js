@@ -3,17 +3,25 @@ import { once } from "node:events";
 import { test } from "node:test";
 import { serve } from "@hono/node-server";
 import { createApps } from "../src/apps.js";
-import { openDatabase, createStore } from "../src/database.js";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
+import { fileURLToPath } from "node:url";
+import { count } from "drizzle-orm";
+import { createStore } from "../src/database.js";
+import { shortVisits } from "../src/schema.js";
 
 test("internal CRUD controls public redirects and visit history", async (t) => {
-    const db = openDatabase(":memory:");
+    const postgres = new PGlite();
+    const db = drizzle(postgres);
     const token = "test-only";
     const { publicApp, internalApp } = createApps(createStore(db, 90), { token });
     const servers = [];
     t.after(async () => {
         await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
-        db.close();
+        await postgres.close();
     });
+    await migrate(db, { migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)) });
     async function listen(app) {
         const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
         servers.push(server);
@@ -52,8 +60,9 @@ test("internal CRUD controls public redirects and visit history", async (t) => {
     );
 
     assert.equal((await redirect("/s/demo")).status, 404);
-    db.prepare("INSERT INTO short_visits (code, initial_url, visited_at) VALUES (?, ?, ?)")
-        .run("Demo", pub + "/demo", "2000-01-01 00:00:00");
+    await db.insert(shortVisits).values({
+        code: "Demo", initial_url: pub + "/demo", visited_at: new Date("2000-01-01T00:00:00Z"),
+    });
     const hit = await redirect("/demo?q=%2F");
     assert.equal(hit.status, 302);
     assert.equal(hit.headers.get("location"), "https://example.com/page?x=1&q=%2F#anchor");
@@ -72,5 +81,6 @@ test("internal CRUD controls public redirects and visit history", async (t) => {
     assert.equal((await call(path, "DELETE")).status, 200);
     assert.equal((await call(path)).status, 404);
     assert.equal((await redirect("/demo")).status, 404);
-    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM short_visits").get().count, 0);
+    const [remaining] = await db.select({ count: count() }).from(shortVisits);
+    assert.equal(remaining.count, 0);
 });
